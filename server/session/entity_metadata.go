@@ -1,6 +1,7 @@
 package session
 
 import (
+	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/entity/effect"
 	"github.com/df-mc/dragonfly/server/internal/nbtconv"
 	"github.com/df-mc/dragonfly/server/item"
@@ -94,6 +95,12 @@ func (s *Session) parseEntityMetadata(e world.Entity) protocol.EntityMetadata {
 	}
 	if sc, ok := e.(scoreTag); ok {
 		m[protocol.EntityDataKeyScore] = sc.ScoreTag()
+	}
+	if sl, ok := e.(sleeper); ok {
+		if pos, ok := sl.Sleeping(); ok {
+			m[protocol.EntityDataKeyBedPosition] = blockPosToProtocol(pos)
+			m.SetFlag(protocol.EntityDataKeyPlayerFlags, protocol.EntityDataFlagSleeping)
+		}
 	}
 	if c, ok := e.(areaEffectCloud); ok {
 		m[protocol.EntityDataKeyDataRadius] = float32(c.Radius())
@@ -256,4 +263,8 @@ type tnt interface {
 
 type living interface {
 	DeathPosition() (mgl64.Vec3, world.Dimension, bool)
+}
+
+type sleeper interface {
+	Sleeping() (cube.Pos, bool)
 }

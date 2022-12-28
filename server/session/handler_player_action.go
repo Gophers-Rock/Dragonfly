@@ -13,7 +13,6 @@ type PlayerActionHandler struct{}
 // Handle ...
 func (*PlayerActionHandler) Handle(p packet.Packet, s *Session) error {
 	pk := p.(*packet.PlayerAction)
-
 	return handlePlayerAction(pk.ActionType, pk.BlockFace, pk.BlockPosition, pk.EntityRuntimeID, s)
 }
 
@@ -23,7 +22,7 @@ func handlePlayerAction(action int32, face int32, pos protocol.BlockPos, entityR
 		return errSelfRuntimeID
 	}
 	switch action {
-	case protocol.PlayerActionRespawn, protocol.PlayerActionDimensionChangeDone:
+	case protocol.PlayerActionRespawn, protocol.PlayerActionStartSleeping, protocol.PlayerActionDimensionChangeDone:
 		// Don't do anything for these actions.
 	case protocol.PlayerActionStopSleeping:
 		if mode := s.c.GameMode(); !mode.Visible() && !mode.HasCollision() {
@@ -31,6 +30,7 @@ func handlePlayerAction(action int32, face int32, pos protocol.BlockPos, entityR
 			// sleeping in the first place. This accounts for that.
 			return nil
 		}
+		s.c.Wake()
 	case protocol.PlayerActionStartBreak, protocol.PlayerActionContinueDestroyBlock:
 		s.swingingArm.Store(true)
 		defer s.swingingArm.Store(false)

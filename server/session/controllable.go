@@ -33,6 +33,9 @@ type Controllable interface {
 	Move(deltaPos mgl64.Vec3, deltaYaw, deltaPitch float64)
 	Speed() float64
 
+	Sleep(pos cube.Pos)
+	Wake()
+
 	Chat(msg ...any)
 	ExecuteCommand(commandLine string)
 	GameMode() world.GameMode

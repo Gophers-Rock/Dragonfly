@@ -67,6 +67,9 @@ type Player struct {
 	invisible, immobile, onGround, usingItem atomic.Bool
 	usingSince atomic.Int64
 
+	sleeping atomic.Bool
+	sleepPos atomic.Value[cube.Pos]
+
 	glideTicks   atomic.Int64
 	fireTicks    atomic.Int64
 	fallDistance atomic.Float64
@@ -276,6 +279,11 @@ func (p *Player) Message(a ...any) {
 // according to the fmt.Sprintf formatting rules.
 func (p *Player) Messagef(f string, a ...any) {
 	p.session().SendMessage(fmt.Sprintf(f, a...))
+}
+
+// Messaget sends a message translation to the player. The message is translated client-side using the client's locale.
+func (p *Player) Messaget(key string, a ...string) {
+	p.session().SendTranslation(key, a...)
 }
 
 // SendPopup sends a formatted popup to the player. The popup is shown above the hotbar of the player and
@@ -610,6 +618,7 @@ func (p *Player) Hurt(dmg float64, src world.DamageSource) (float64, bool) {
 	} else if _, ok := src.(entity.DrowningDamageSource); ok {
 		w.PlaySound(pos, sound.Drowning{})
 	}
+	p.Wake()
 
 	p.immunity.Store(time.Now().Add(immunity))
 	if p.Dead() {
@@ -1107,6 +1116,73 @@ func (p *Player) StopFlying() {
 		return
 	}
 	p.session().SendGameMode(p.GameMode())
+}
+
+// Sleep makes the player sleep at the given position. If the position does not map to a bed (specifically the head side),
+// the player will not sleep.
+func (p *Player) Sleep(pos cube.Pos) {
+	ctx, sendReminder := event.C(), true
+	if p.Handler().HandleSleep(ctx, &sendReminder); ctx.Cancelled() {
+		return
+	}
+
+	w := p.World()
+	if b, ok := w.Block(pos).(block.Bed); ok {
+		if b.User != nil {
+			// The player cannot sleep here.
+			return
+		}
+		b.User = p
+		w.SetBlock(pos, b, nil)
+	}
+
+	w.SetRequiredSleepDuration(time.Second * 5)
+	if sendReminder {
+		w.BroadcastSleepingReminder(p)
+	}
+
+	p.pos.Store(pos.Vec3Middle().Add(mgl64.Vec3{0, 0.5625}))
+	p.sleeping.Store(true)
+	p.sleepPos.Store(pos)
+
+	w.BroadcastSleepingIndicator()
+	p.updateState()
+}
+
+// Wake forces the player out of bed if they are sleeping.
+func (p *Player) Wake() {
+	if !p.sleeping.CAS(true, false) {
+		return
+	}
+
+	w := p.World()
+	w.SetRequiredSleepDuration(0)
+	w.BroadcastSleepingIndicator()
+
+	for _, v := range p.viewers() {
+		v.ViewEntityWake(p)
+	}
+	p.updateState()
+
+	pos := p.sleepPos.Load()
+	if b, ok := w.Block(pos).(block.Bed); ok {
+		b.User = nil
+		w.SetBlock(pos, b, nil)
+	}
+}
+
+// Sleeping returns true if the player is currently sleeping, along with the position of the bed the player is sleeping
+// on.
+func (p *Player) Sleeping() (cube.Pos, bool) {
+	if !p.sleeping.Load() {
+		return cube.Pos{}, false
+	}
+	return p.sleepPos.Load(), true
+}
+
+// SendSleepingIndicator displays a notification to the player on the amount of sleeping players in the world.
+func (p *Player) SendSleepingIndicator(sleeping, max int) {
+	p.session().ViewSleepingPlayers(sleeping, max)
 }
 
 // Jump makes the player jump if they are on ground. It exhausts the player by 0.05 food points, an additional 0.15
@@ -1841,12 +1917,12 @@ func (p *Player) BreakBlock(pos cube.Pos) {
 		p.resendBlocks(pos, w)
 		return
 	}
+
 	held, left := p.HeldItems()
 
 	p.SwingArm()
 	w.SetBlock(pos, nil, nil)
 	w.AddParticle(pos.Vec3Centre(), particle.BlockBreak{Block: b})
-
 	if breakable, ok := b.(block.Breakable); ok {
 		info := breakable.BreakInfo()
 		if info.BreakHandler != nil {
@@ -1959,6 +2035,8 @@ func (p *Player) Teleport(pos mgl64.Vec3) {
 	if p.Handler().HandleTeleport(ctx, pos); ctx.Cancelled() {
 		return
 	}
+	p.Wake()
+	p.ResetFallDistance()
 	p.teleport(pos)
 }
 
@@ -2068,8 +2146,9 @@ func (p *Player) Velocity() mgl64.Vec3 {
 // SetVelocity updates the player's velocity. If there is an attached session, this will just send
 // the velocity to the player session for the player to update.
 func (p *Player) SetVelocity(velocity mgl64.Vec3) {
+	p.vel.Store(velocity)
 	if p.session() == session.Nop {
-		p.vel.Store(velocity)
+		// We don't have a session, so we don't need to send the velocity here.
 		return
 	}
 	for _, v := range p.viewers() {
